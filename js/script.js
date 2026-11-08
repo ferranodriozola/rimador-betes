@@ -1189,6 +1189,15 @@ function cercarDesDeLaURL() {
   const paraula = parametres.get('q');
   if (!paraula || !paraula.trim()) return;
 
+  // Un marcador sense substituir ("{search_term_string}", que és el de la
+  // plantilla del SearchAction d'aquest mateix fitxer) no és una cerca: és un
+  // visitant automàtic que ha agafat la plantilla al peu de la lletra. No se
+  // cerca res, i s'apunta qui és (vegeu registrarTrampa).
+  if (/^\{[^{}]*\}$/.test(paraula.trim())) {
+    registrarTrampa(paraula.trim());
+    return;
+  }
+
   const camp = document.getElementById('paraulaCercada');
   if (!camp) return;
 
@@ -1385,6 +1394,23 @@ async function enviarCerquesPendents() {
 window.addEventListener('online', () => enviarCerquesPendents());
 enviarCerquesPendents();
 
+// L'hora que té el navegador ARA, escrita en horari de Catalunya i com
+// "dd/mm/aaaa h:mm:ss" (l'hora, sense zero al davant). És la que va a la columna
+// Data del full de les cerques i a "Hora client" de la pestanya Trampes: la
+// d'aquest rellotge, no la de Google (vegeu apps_script_cerques.gs).
+function horaRealMadrid() {
+  return new Date().toLocaleString('es-ES', {
+    timeZone: 'Europe/Madrid',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: 'numeric',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false
+  }).replace(',', '');
+}
+
 function registrarCerca(paraulaBuscada, rimaTrobada, tipusRima, codiParaula, numeroSeleccionat, comenca, inclourePropis, inclourePlurals) {
   // Aquesta comprovació va la primera de totes. Abans era al final, just
   // abans del fetch, i per tant el web de proves i el navegador en local
@@ -1405,16 +1431,7 @@ function registrarCerca(paraulaBuscada, rimaTrobada, tipusRima, codiParaula, num
     tipusRima: tipusRima,
     dialecte: dialecteActiu,
     usuari: getUsuariID(),
-horaReal: new Date().toLocaleString('es-ES', {
-      timeZone: 'Europe/Madrid',
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: 'numeric',
-      minute: '2-digit',
-      second: '2-digit',
-      hour12: false
-    }).replace(',', '') 
+horaReal: horaRealMadrid()
   };
 
   if (navigator.onLine === false) {
@@ -1430,6 +1447,54 @@ horaReal: new Date().toLocaleString('es-ES', {
 }
 
 
+
+
+// --------------------------------------------------- Qui és el visitant
+//
+// Quan algú arriba amb ?q={search_term_string} (vegeu cercarDesDeLaURL), no es
+// fa la cerca i s'envia una nota al full "Trampes" de l'Apps Script de les
+// cerques, per saber qui és. Només és el que el navegador diu de si mateix: ni
+// l'IP (que no es pot saber des d'aquí) ni res de la persona. Una persona no
+// escriu mai un marcador entre claus, o sigui que això només recull visitants
+// automàtics.
+//
+// Un cop per càrrega de pàgina, i sense cua per si no hi ha connexió: no val la
+// pena desar res al localStorage per una nota que no importa si es perd.
+let trampaEnviada = false;
+
+function registrarTrampa(marcador) {
+  if (trampaEnviada || !ES_WEB_OFICIAL) return;
+  trampaEnviada = true;
+
+  // Cada lectura per separat: n'hi ha que no existeixen en tots els navegadors
+  // (i un navegador estrany és justament el que busquem).
+  const llegeix = (f) => { try { const v = f(); return v == null ? '' : String(v); } catch (e) { return ''; } };
+
+  const camps = {
+    tipus: 'trampa',
+    marcador: marcador,
+    usuari: llegeix(getUsuariID),
+    horaReal: llegeix(horaRealMadrid),
+    userAgent: llegeix(() => navigator.userAgent),
+    marques: llegeix(() => navigator.userAgentData.brands.map((b) => b.brand + ' ' + b.version).join(', ')),
+    webdriver: llegeix(() => navigator.webdriver),
+    referrer: llegeix(() => document.referrer),
+    url: llegeix(() => window.location.href),
+    idioma: llegeix(() => navigator.language),
+    idiomes: llegeix(() => navigator.languages.join(',')),
+    fus: llegeix(() => Intl.DateTimeFormat().resolvedOptions().timeZone),
+    pantalla: llegeix(() => screen.width + 'x' + screen.height),
+    finestra: llegeix(() => window.innerWidth + 'x' + window.innerHeight),
+    nuclis: llegeix(() => navigator.hardwareConcurrency),
+    plugins: llegeix(() => navigator.plugins.length),
+  };
+
+  fetch(URL_GOOGLE_SCRIPT, {
+    method: 'POST',
+    mode: 'no-cors',
+    body: new URLSearchParams(camps)
+  }).catch(() => {});
+}
 
 
 //FUNCIONS PRINCIPALS

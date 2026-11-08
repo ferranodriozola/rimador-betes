@@ -1,7 +1,7 @@
 # Compilador de la classificacio (leaderboard) del joc.
 #
-# Funciona igual que stats/stats.py: llegeix el full de calcul de Google publicat
-# en CSV (on el Google Apps Script va apuntant les puntuacions que envia la gent)
+# Funciona igual que stats/stats.py: demana amb una clau el full de calcul de
+# Google (on el Google Apps Script va apuntant les puntuacions que envia la gent)
 # i n'escriu un ranquing net a joc/dades/classificacio.json, que es el que mostra
 # la pantalla de classificacio del joc.
 #
@@ -27,11 +27,12 @@
 # classificacio. Aixi tothom surt a la mateixa taula i es veu en que jugava.
 #
 # Execucio (a ma, quan es vulgui refrescar el ranquing):
-#   python joc/eines/compilar_classificacio.py
+#   CLAU_LECTURA_FULLS='...' python joc/eines/compilar_classificacio.py
 
+import io
 import json
 import os
-import ssl
+import sys
 import unicodedata
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -44,12 +45,15 @@ try:
 except ModuleNotFoundError:
     pd = None
 
-ssl._create_default_https_context = ssl._create_unverified_context
+# L'eina de llegir els fulls privats la comparteix amb stats/stats.py.
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "stats"))
+from llegir_full import baixar_full
 
 # --- Configuracio -----------------------------------------------------------
 
-# El full publicat en CSV (Fitxer > Comparteix > Publica a la web > CSV). 
-URL_FULL_CSV = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRwuOIIAtFLHbvQpMS_gHPTBOyge4TCoXb--viKHL3tTux1qkDgv9evA_wy2aYVzGKXTDfEefqtXC4l/pub?output=csv"
+# El full es privat: es demana al seu Apps Script amb una clau (vegeu
+# stats/llegir_full.py). L'adreca es la mateixa URL_ENVIAMENT de joc/js/classificacio.js.
+URL_APPS_SCRIPT = "https://script.google.com/macros/s/AKfycbz6mXph0DU7jZPKg-EAHSbVPJoFLDgvNbocAGv4HGkruOH_ZoauwNKAxUu3SaRLbxPbzg/exec"
 
 # Quantes posicions guardem per modalitat.
 TOP_N = 15
@@ -72,6 +76,13 @@ NOM_DIFICULTAT = {"facil": "Fàcil", "dificil": "Difícil"}
 # Els rellotges de l'il·limitat (vegeu les opcions de temps de joc/index.html).
 # Un rellotge que no sigui cap d'aquests es titula amb els segons i prou.
 NOM_TEMPS = {"30": "Llampec", "60": "Estàndard", "120": "Lent"}
+
+# Quines partides son possibles. Han de dir el mateix que apps_script_classificacio.gs:
+# l'Apps Script ja ho filtra al rebre-les, pero l'adreca on s'envien es publica i
+# hi pot haver files d'abans de les comprovacions (o escrites a ma al full).
+SEGONS_PERMESOS = {30, 60, 120}
+SEGONS_DIARIA = 60
+MAX_PUNTS_PER_SEGON = 1.5
 
 # Les columnes que ha de dur el full. 
 COLUMNES = ["Data", "Sobrenom", "Mode", "Dificultat", "Segons", "Punts",
@@ -170,7 +181,7 @@ def main():
 
     # Gestió estricta d'errors per aturar Github Actions si hi ha problemes
     try:
-        df = pd.read_csv(URL_FULL_CSV)
+        df = pd.read_csv(io.StringIO(baixar_full(URL_APPS_SCRIPT, ["Data", "Sobrenom"])))
         if df.empty:
             raise ValueError("El CSV s'ha descarregat però està completament buit.")
     except Exception as e:
@@ -189,6 +200,15 @@ def main():
     for columna in ["Sobrenom", "Mode", "Dificultat", "Segons", "Paraula",
                     "Usuari", "Dialecte", "DataPartida"]:
         df[columna] = df[columna].fillna("").astype(str)
+
+    # Nomes passen les partides que el joc pot haver jugat de veritat: un mode,
+    # una dificultat i un rellotge que existeixen, i uns punts que caben en el
+    # temps que dura la partida.
+    segons_num = pd.to_numeric(df["Segons"], errors="coerce")
+    segons_ok = segons_num.isin(SEGONS_PERMESOS)
+    segons_ok &= (df["Mode"] != "diaria") | (segons_num == SEGONS_DIARIA)
+    df = df[df["Mode"].isin(NOM_MODE) & df["Dificultat"].isin(NOM_DIFICULTAT)
+            & segons_ok & (df["Punts"] <= segons_num * MAX_PUNTS_PER_SEGON)]
 
     # Nomes es valida la DataPartida (ignorem la de recepcio)
     dia_partida = df["DataPartida"].str.strip()
